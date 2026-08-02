@@ -43,6 +43,10 @@ test("ships three playable tracks and the core feedback systems", async () => {
   assert.match(page, /FULL COMBO/);
   assert.match(page, /CORE INTEGRITY/);
   assert.match(page, /GAME OVER/);
+  assert.match(page, /kind: "tap" \| "hold"/);
+  assert.match(page, /feedbackJudge: Judge = "MISS"/);
+  assert.match(page, /registerMiss\(lane, audio\.currentTime, "BREAK"\)/);
+  assert.match(page, /onPointerUp=\{handlePointerRelease\}/);
   assert.match(page, /EASY: \{ miss: 5, empty: 2 \}/);
   assert.match(page, /sync: Math\.max\(0, current\.sync - 5\)/);
   assert.match(page, /integrity: Math\.max\(0, current\.integrity - damage\)/);

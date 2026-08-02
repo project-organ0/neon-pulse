@@ -12,6 +12,7 @@
 - PERFECT / GREAT / GOOD / MISS, EARLY / LATE 피드백
 - 콤보, 점수, 오버드라이브, 최고 기록, FULL COMBO
 - 난이도별 CORE INTEGRITY 체력과 GAME OVER
+- 전 난이도 롱노트와 조기 해제 BREAK 판정
 - 타격음, 모션 축소, 진동 설정
 
 ## 로컬 실행

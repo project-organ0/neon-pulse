@@ -10,7 +10,8 @@ const COLORS = ["#36f1ff", "#7b61ff", "#ff4fd8", "#ffb84d"];
 
 type Difficulty = "EASY" | "NORMAL" | "HARD";
 type Phase = "select" | "ready" | "countdown" | "playing" | "paused" | "gameover" | "results";
-type Judge = "PERFECT" | "GREAT" | "GOOD" | "MISS" | "EMPTY";
+type HitJudge = "PERFECT" | "GREAT" | "GOOD";
+type Judge = HitJudge | "MISS" | "EMPTY" | "HOLD" | "BREAK";
 type Timing = "EARLY" | "LATE" | "JUST";
 
 type Track = {
@@ -81,6 +82,11 @@ type Note = {
   lane: number;
   hit: boolean;
   missed: boolean;
+  kind: "tap" | "hold";
+  duration: number;
+  started: boolean;
+  startJudge?: HitJudge;
+  startTiming?: Timing;
 };
 
 type Particle = {
@@ -148,6 +154,7 @@ function buildChart(track: Track, difficulty: Difficulty): Note[] {
     [0, 2, 1, 3, 2, 0, 3, 1],
     [3, 1, 2, 0, 1, 3, 0, 2],
   ];
+  const holdUntil = [0, 0, 0, 0];
   let id = 0;
 
   for (let step = 0; ; step += 1) {
@@ -181,10 +188,26 @@ function buildChart(track: Track, difficulty: Difficulty): Note[] {
     const section = (time < firstDropStart ? 0 : time < breakEnd ? 1 : 2) + track.seed;
     const lanePattern = lanePatterns[section % lanePatterns.length];
     const lane = lanePattern[(step + Math.floor(step / 9) + track.seed) % lanePattern.length];
-    notes.push({ id: id++, time, lane, hit: false, missed: false });
+    if (time < holdUntil[lane] - 0.02) continue;
+    const isHold =
+      !inBreak &&
+      sub === 0 &&
+      time > 10 &&
+      beatIndex % (difficulty === "EASY" ? 32 : 16) === track.seed % 8;
+    const holdDuration = isHold ? beat * (difficulty === "HARD" ? 2.5 : difficulty === "NORMAL" ? 2 : 1.5) : 0;
+    if (isHold) holdUntil[lane] = time + holdDuration;
+    notes.push({
+      id: id++, time, lane, hit: false, missed: false,
+      kind: isHold ? "hold" : "tap", duration: holdDuration, started: false,
+    });
 
-    if (difficulty !== "EASY" && inDrop && sub === 0 && beatIndex % 8 === 0) {
-      notes.push({ id: id++, time, lane: (lane + 2) % 4, hit: false, missed: false });
+    if (!isHold && difficulty !== "EASY" && inDrop && sub === 0 && beatIndex % 8 === 0) {
+      const chordLane = (lane + 2) % 4;
+      if (time < holdUntil[chordLane] - 0.02) continue;
+      notes.push({
+        id: id++, time, lane: chordLane, hit: false, missed: false,
+        kind: "tap", duration: 0, started: false,
+      });
     }
   }
 
@@ -223,6 +246,8 @@ export default function Home() {
   const pulsesRef = useRef<Pulse[]>([]);
   const feedbacksRef = useRef<Array<{ judge: Judge; at: number; lane: number; timing?: Timing }>>([]);
   const pressedUntilRef = useRef([0, 0, 0, 0]);
+  const heldLanesRef = useRef([false, false, false, false]);
+  const pointerLanesRef = useRef(new Map<number, number>());
   const phaseRef = useRef<Phase>("ready");
   const statsRef = useRef<Stats>({ ...EMPTY_STATS });
   const shakeRef = useRef(0);
@@ -344,7 +369,39 @@ export default function Home() {
     if (vibrationEnabled && navigator.vibrate) navigator.vibrate(judge === "PERFECT" ? 16 : 8);
   }, [reducedFx, vibrationEnabled]);
 
-  const registerMiss = useCallback((lane: number, currentTime: number) => {
+  const awardNote = useCallback((lane: number, judge: HitJudge, currentTime: number, timing: Timing, displayJudge: Judge = judge) => {
+    const current = statsRef.current;
+    const combo = current.combo + 1;
+    const wasOverdrive = currentTime < overdriveUntilRef.current;
+    let sync = wasOverdrive
+      ? current.sync
+      : Math.min(100, current.sync + (judge === "PERFECT" ? 1.5 : judge === "GREAT" ? 0.8 : 0.3));
+    if (sync >= 100 && !wasOverdrive) {
+      overdriveUntilRef.current = currentTime + 8;
+      sync = 100;
+    }
+    const overdrive = currentTime < overdriveUntilRef.current;
+    const base = judge === "PERFECT" ? 1000 : judge === "GREAT" ? 700 : 400;
+    const multiplier = 1 + Math.min(2, Math.floor(combo / 25) * 0.25) + (overdrive ? 0.5 : 0);
+
+    statsRef.current = {
+      ...current,
+      score: current.score + Math.round(base * multiplier),
+      combo,
+      maxCombo: Math.max(current.maxCombo, combo),
+      sync,
+      perfect: current.perfect + (judge === "PERFECT" ? 1 : 0),
+      great: current.great + (judge === "GREAT" ? 1 : 0),
+      good: current.good + (judge === "GOOD" ? 1 : 0),
+      overdrive,
+      integrity: Math.min(100, current.integrity + (judge === "PERFECT" ? 0.8 : judge === "GREAT" ? 0.3 : 0)),
+    };
+    feedbacksRef.current.push({ judge: displayJudge, at: currentTime, lane, timing });
+    playHitSound(judge);
+    spawnHitEffect(lane, judge);
+  }, [playHitSound, spawnHitEffect]);
+
+  const registerMiss = useCallback((lane: number, currentTime: number, feedbackJudge: Judge = "MISS") => {
     if (phaseRef.current !== "playing") return;
     const current = statsRef.current;
     const damage = DAMAGE[selectionRef.current.difficulty].miss;
@@ -357,7 +414,7 @@ export default function Home() {
       integrity,
     };
     statsRef.current = nextStats;
-    feedbacksRef.current.push({ judge: "MISS", at: currentTime, lane });
+    feedbacksRef.current.push({ judge: feedbackJudge, at: currentTime, lane });
     if (!reducedFx) shakeRef.current = Math.max(shakeRef.current, 3);
     if (integrity <= 0) {
       audioRef.current?.pause();
@@ -378,7 +435,7 @@ export default function Home() {
       let closest = Infinity;
 
       for (const note of notesRef.current) {
-        if (note.hit || note.missed || note.lane !== lane) continue;
+        if (note.hit || note.missed || note.started || note.lane !== lane) continue;
         const distance = Math.abs(note.time - judgedTime);
         if (distance < closest) {
           closest = distance;
@@ -408,42 +465,41 @@ export default function Home() {
         return;
       }
 
-      candidate.hit = true;
-      const judge: Judge = closest <= 0.04 ? "PERFECT" : closest <= 0.08 ? "GREAT" : "GOOD";
+      const judge: HitJudge = closest <= 0.04 ? "PERFECT" : closest <= 0.08 ? "GREAT" : "GOOD";
       const delta = judgedTime - candidate.time;
       const timing: Timing = Math.abs(delta) <= 0.012 ? "JUST" : delta < 0 ? "EARLY" : "LATE";
-      const current = statsRef.current;
-      const combo = current.combo + 1;
-      const wasOverdrive = audio.currentTime < overdriveUntilRef.current;
-      let sync = wasOverdrive
-        ? current.sync
-        : Math.min(100, current.sync + (judge === "PERFECT" ? 1.5 : judge === "GREAT" ? 0.8 : 0.3));
-      if (sync >= 100 && !wasOverdrive) {
-        overdriveUntilRef.current = audio.currentTime + 8;
-        sync = 100;
+      if (candidate.kind === "hold") {
+        candidate.started = true;
+        candidate.startJudge = judge;
+        candidate.startTiming = timing;
+        feedbacksRef.current.push({ judge: "HOLD", at: audio.currentTime, lane, timing });
+        playHitSound(judge);
+        spawnHitEffect(lane, judge);
+      } else {
+        candidate.hit = true;
+        awardNote(lane, judge, audio.currentTime, timing);
       }
-      const overdrive = audio.currentTime < overdriveUntilRef.current;
-      const base = judge === "PERFECT" ? 1000 : judge === "GREAT" ? 700 : 400;
-      const multiplier = 1 + Math.min(2, Math.floor(combo / 25) * 0.25) + (overdrive ? 0.5 : 0);
-
-      statsRef.current = {
-        ...current,
-        score: current.score + Math.round(base * multiplier),
-        combo,
-        maxCombo: Math.max(current.maxCombo, combo),
-        sync,
-        perfect: current.perfect + (judge === "PERFECT" ? 1 : 0),
-        great: current.great + (judge === "GREAT" ? 1 : 0),
-        good: current.good + (judge === "GOOD" ? 1 : 0),
-        overdrive,
-        integrity: Math.min(100, current.integrity + (judge === "PERFECT" ? 0.8 : judge === "GREAT" ? 0.3 : 0)),
-      };
-      feedbacksRef.current.push({ judge, at: audio.currentTime, lane, timing });
-      playHitSound(judge);
-      spawnHitEffect(lane, judge);
     },
-    [difficulty, offsetMs, playHitSound, reducedFx, spawnHitEffect],
+    [awardNote, difficulty, offsetMs, playHitSound, reducedFx, spawnHitEffect],
   );
+
+  const releaseLane = useCallback((lane: number) => {
+    heldLanesRef.current[lane] = false;
+    if (phaseRef.current !== "playing") return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    const activeHold = notesRef.current.find((note) => note.kind === "hold" && note.started && !note.hit && !note.missed && note.lane === lane);
+    if (!activeHold) return;
+    if (audio.currentTime < activeHold.time + activeHold.duration - 0.08) {
+      activeHold.started = false;
+      activeHold.missed = true;
+      registerMiss(lane, audio.currentTime, "BREAK");
+    } else {
+      activeHold.started = false;
+      activeHold.hit = true;
+      awardNote(lane, activeHold.startJudge ?? "GOOD", audio.currentTime, activeHold.startTiming ?? "JUST", "HOLD");
+    }
+  }, [awardNote, registerMiss]);
 
   const resetGame = useCallback(() => {
     notesRef.current = buildChart(track, difficulty);
@@ -451,6 +507,8 @@ export default function Home() {
     pulsesRef.current = [];
     feedbacksRef.current = [];
     pressedUntilRef.current = [0, 0, 0, 0];
+    heldLanesRef.current = [false, false, false, false];
+    pointerLanesRef.current.clear();
     statsRef.current = { ...EMPTY_STATS };
     setStats({ ...EMPTY_STATS });
     shakeRef.current = 0;
@@ -523,14 +581,23 @@ export default function Home() {
       const lane = KEY_CODES.indexOf(event.code);
       if (lane >= 0) {
         event.preventDefault();
+        heldLanesRef.current[lane] = true;
         hitLane(lane);
       }
       if (event.key === "Escape") togglePause();
       if (event.code === "Space" && phaseRef.current === "paused") togglePause();
     };
+    const up = (event: KeyboardEvent) => {
+      const lane = KEY_CODES.indexOf(event.code);
+      if (lane >= 0) releaseLane(lane);
+    };
     window.addEventListener("keydown", down);
-    return () => window.removeEventListener("keydown", down);
-  }, [hitLane, togglePause]);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, [hitLane, releaseLane, togglePause]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -565,7 +632,17 @@ export default function Home() {
 
       if (phaseRef.current === "playing") {
         for (const note of notesRef.current) {
-          if (!note.hit && !note.missed && currentTime - note.time > 0.15) {
+          if (note.kind === "hold" && note.started && !note.hit && !note.missed) {
+            if (currentTime >= note.time + note.duration) {
+              note.started = false;
+              note.hit = true;
+              awardNote(note.lane, note.startJudge ?? "GOOD", currentTime, note.startTiming ?? "JUST", "HOLD");
+            } else if (!heldLanesRef.current[note.lane]) {
+              note.started = false;
+              note.missed = true;
+              registerMiss(note.lane, currentTime, "BREAK");
+            }
+          } else if (!note.hit && !note.missed && currentTime - note.time > 0.15) {
             note.missed = true;
             registerMiss(note.lane, currentTime);
             if (phaseRef.current === "gameover") break;
@@ -686,13 +763,35 @@ export default function Home() {
       for (const note of notesRef.current) {
         if (note.hit || note.missed) continue;
         const relative = note.time - currentTime;
-        if (relative > TRAVEL_TIME || relative < -0.16) continue;
-        const y = hitY - (relative / TRAVEL_TIME) * hitY;
+        const endRelative = note.time + note.duration - currentTime;
+        if (relative > TRAVEL_TIME || (note.kind === "tap" ? relative < -0.16 : endRelative < -0.16)) continue;
         const x = note.lane * laneWidth + laneWidth * 0.12;
         const w = laneWidth * 0.76;
         const h = Math.max(12, height * 0.018);
         ctx.shadowColor = COLORS[note.lane];
         ctx.shadowBlur = isOverdrive ? 30 : 18;
+        if (note.kind === "hold") {
+          const headY = note.started ? hitY : hitY - (relative / TRAVEL_TIME) * hitY;
+          const tailY = hitY - (endRelative / TRAVEL_TIME) * hitY;
+          const bodyTop = Math.max(-h, Math.min(headY, tailY));
+          const bodyBottom = Math.min(hitY, Math.max(headY, tailY));
+          ctx.globalAlpha = note.started ? 0.95 : 0.7;
+          ctx.fillStyle = COLORS[note.lane];
+          ctx.fillRect(x + w * 0.32, bodyTop, w * 0.36, Math.max(h, bodyBottom - bodyTop));
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = "rgba(255,255,255,.92)";
+          ctx.fillRect(x + w * 0.2, tailY - h * 0.45, w * 0.6, h * 0.9);
+          ctx.fillStyle = COLORS[note.lane];
+          ctx.fillRect(x, headY - h / 2, w, h);
+          ctx.fillStyle = "rgba(4,10,20,.86)";
+          ctx.font = `800 ${Math.max(9, height * 0.012)}px ui-monospace, monospace`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("HOLD", x + w / 2, headY);
+          ctx.shadowBlur = 0;
+          continue;
+        }
+        const y = hitY - (relative / TRAVEL_TIME) * hitY;
         ctx.fillStyle = COLORS[note.lane];
         ctx.fillRect(x, y - h / 2, w, h);
         ctx.fillStyle = "rgba(255,255,255,.9)";
@@ -708,7 +807,7 @@ export default function Home() {
 
       for (let lane = 0; lane < 4; lane += 1) {
         const cx = lane * laneWidth + laneWidth / 2;
-        const pressed = now < pressedUntilRef.current[lane];
+        const pressed = heldLanesRef.current[lane] || now < pressedUntilRef.current[lane];
         ctx.beginPath();
         ctx.arc(cx, hitY, Math.min(pressed ? 29 : 24, laneWidth * 0.19), 0, Math.PI * 2);
         ctx.fillStyle = pressed ? COLORS[lane] : "#060916";
@@ -761,7 +860,7 @@ export default function Home() {
           ctx.globalAlpha = Math.min(1, strength * 2.5);
           ctx.font = `900 ${Math.max(28, size * (height / 800))}px Arial Black, sans-serif`;
           ctx.textAlign = "center";
-          ctx.fillStyle = feedback.judge === "MISS" || feedback.judge === "EMPTY" ? "#ff365f" : feedback.judge === "GOOD" ? "#ffb84d" : "#ffffff";
+          ctx.fillStyle = feedback.judge === "MISS" || feedback.judge === "EMPTY" || feedback.judge === "BREAK" ? "#ff365f" : feedback.judge === "GOOD" ? "#ffb84d" : "#ffffff";
           ctx.shadowColor = feedback.judge === "PERFECT" ? "#36f1ff" : COLORS[feedback.lane];
           ctx.shadowBlur = feedback.judge === "PERFECT" ? 36 : 22;
           ctx.fillText(feedback.judge, 0, 0);
@@ -792,13 +891,23 @@ export default function Home() {
       cancelAnimationFrame(animation);
       window.removeEventListener("resize", resize);
     };
-  }, [registerMiss]);
+  }, [awardNote, registerMiss]);
 
-  const handlePointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (phaseRef.current !== "playing") return;
     const rect = event.currentTarget.getBoundingClientRect();
     const lane = Math.max(0, Math.min(3, Math.floor(((event.clientX - rect.left) / rect.width) * 4)));
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointerLanesRef.current.set(event.pointerId, lane);
+    heldLanesRef.current[lane] = true;
     hitLane(lane);
+  };
+
+  const handlePointerRelease = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const lane = pointerLanesRef.current.get(event.pointerId);
+    if (lane === undefined) return;
+    pointerLanesRef.current.delete(event.pointerId);
+    releaseLane(lane);
   };
 
   const accuracy = getAccuracy(stats);
@@ -861,7 +970,13 @@ export default function Home() {
         </div>
 
         <div className="playfield-frame">
-          <canvas ref={canvasRef} onPointerDown={handlePointer} aria-label="4레인 리듬 게임 플레이 영역" />
+          <canvas
+            ref={canvasRef}
+            onPointerDown={handlePointerDown}
+            onPointerUp={handlePointerRelease}
+            onPointerCancel={handlePointerRelease}
+            aria-label="4레인 리듬 게임 플레이 영역. 긴 노트는 끝까지 누르세요."
+          />
           {phase === "select" && (
             <div className="overlay select-panel" role="dialog" aria-modal="true" aria-labelledby="track-select-title">
               <div className="select-heading">
@@ -941,7 +1056,7 @@ export default function Home() {
             <div className="overlay ready-panel" role="dialog" aria-modal="true" aria-labelledby="ready-title">
               <p className="mission-code">{track.protocol} · {difficulty} LV.{track.levels[difficulty]}</p>
               <h2 id="ready-title">{track.title}</h2>
-              <p>신호가 판정선에 닿는 순간 탭하세요.<br />정확할수록 네온 코어가 강하게 폭발합니다.</p>
+              <p>신호가 판정선에 닿는 순간 탭하세요.<br />길게 이어진 노트는 끝부분까지 누르고 있어야 합니다.</p>
               <div className="track-spec">
                 <span>{track.bpm.toFixed(2)} BPM</span><span>4 LANES</span><span>{chartSize} NOTES</span>
               </div>
