@@ -9,8 +9,9 @@ const KEY_CODES = ["KeyD", "KeyF", "KeyJ", "KeyK"];
 const COLORS = ["#36f1ff", "#7b61ff", "#ff4fd8", "#ffb84d"];
 
 type Difficulty = "EASY" | "NORMAL" | "HARD";
-type Phase = "select" | "ready" | "playing" | "paused" | "results";
-type Judge = "PERFECT" | "GREAT" | "GOOD" | "MISS";
+type Phase = "select" | "ready" | "countdown" | "playing" | "paused" | "results";
+type Judge = "PERFECT" | "GREAT" | "GOOD" | "MISS" | "EMPTY";
+type Timing = "EARLY" | "LATE" | "JUST";
 
 type Track = {
   id: string;
@@ -23,6 +24,8 @@ type Track = {
   audio: string;
   accent: string;
   seed: number;
+  levels: Record<Difficulty, number>;
+  sections: { firstDropStart: number; firstDropEnd: number; breakEnd: number; finalDropEnd: number };
 };
 
 const TRACKS: Track[] = [
@@ -37,6 +40,8 @@ const TRACKS: Track[] = [
     audio: "/audio/circuit-bloom.ogg",
     accent: "#41ff9a",
     seed: 3,
+    levels: { EASY: 2, NORMAL: 5, HARD: 8 },
+    sections: { firstDropStart: 48, firstDropEnd: 72, breakEnd: 88, finalDropEnd: 112 },
   },
   {
     id: "neon-pulse-protocol",
@@ -49,6 +54,8 @@ const TRACKS: Track[] = [
     audio: "/audio/neon-pulse-protocol.ogg",
     accent: "#36f1ff",
     seed: 11,
+    levels: { EASY: 3, NORMAL: 6, HARD: 9 },
+    sections: { firstDropStart: 48, firstDropEnd: 72, breakEnd: 88, finalDropEnd: 112 },
   },
   {
     id: "overclock-horizon",
@@ -61,11 +68,12 @@ const TRACKS: Track[] = [
     audio: "/audio/overclock-horizon.ogg",
     accent: "#ff4fd8",
     seed: 19,
+    levels: { EASY: 4, NORMAL: 7, HARD: 10 },
+    sections: { firstDropStart: 44, firstDropEnd: 68, breakEnd: 84, finalDropEnd: 112 },
   },
 ];
 
 const DIFFICULTIES: Difficulty[] = ["EASY", "NORMAL", "HARD"];
-const LEVELS: Record<Difficulty, number> = { EASY: 3, NORMAL: 6, HARD: 9 };
 
 type Note = {
   id: number;
@@ -106,8 +114,9 @@ type Stats = {
   overdrive: boolean;
 };
 
-type RecordEntry = { score: number; accuracy: number; grade: string; maxCombo: number };
+type RecordEntry = { score: number; accuracy: number; grade: string; maxCombo: number; fullCombo?: boolean };
 type Records = Record<string, RecordEntry>;
+type ResultMeta = { newBest: boolean; previousBest: number; fullCombo: boolean };
 
 const EMPTY_STATS: Stats = {
   score: 0,
@@ -141,8 +150,11 @@ function buildChart(track: Track, difficulty: Difficulty): Note[] {
     const sub = step % division;
     let add = false;
 
-    const inDrop = (time >= 48 && time < 72) || (time >= 88 && time < 112);
-    const inBreak = time >= 72 && time < 88;
+    const { firstDropStart, firstDropEnd, breakEnd, finalDropEnd } = track.sections;
+    const inDrop =
+      (time >= firstDropStart && time < firstDropEnd) ||
+      (time >= breakEnd && time < finalDropEnd);
+    const inBreak = time >= firstDropEnd && time < breakEnd;
     if (time < 3.8) add = false;
     else if (difficulty === "EASY") {
       add = sub === 0 && (inDrop || beatIndex % 2 === 0);
@@ -158,7 +170,7 @@ function buildChart(track: Track, difficulty: Difficulty): Note[] {
 
     if (!add) continue;
 
-    const section = (time < 48 ? 0 : time < 88 ? 1 : 2) + track.seed;
+    const section = (time < firstDropStart ? 0 : time < breakEnd ? 1 : 2) + track.seed;
     const lanePattern = lanePatterns[section % lanePatterns.length];
     const lane = lanePattern[(step + Math.floor(step / 9) + track.seed) % lanePattern.length];
     notes.push({ id: id++, time, lane, hit: false, missed: false });
@@ -197,10 +209,12 @@ export default function Home() {
   const track = useMemo(() => TRACKS.find((item) => item.id === selectedTrackId) ?? TRACKS[0], [selectedTrackId]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const notesRef = useRef<Note[]>(buildChart(TRACKS[0], "EASY"));
   const particlesRef = useRef<Particle[]>([]);
   const pulsesRef = useRef<Pulse[]>([]);
-  const feedbackRef = useRef<{ judge: Judge; at: number; lane: number } | null>(null);
+  const feedbacksRef = useRef<Array<{ judge: Judge; at: number; lane: number; timing?: Timing }>>([]);
+  const pressedUntilRef = useRef([0, 0, 0, 0]);
   const phaseRef = useRef<Phase>("ready");
   const statsRef = useRef<Stats>({ ...EMPTY_STATS });
   const shakeRef = useRef(0);
@@ -208,9 +222,16 @@ export default function Home() {
   const overdriveUntilRef = useRef(0);
   const lastHudUpdateRef = useRef(0);
   const selectionRef = useRef({ track: TRACKS[0], difficulty: "EASY" as Difficulty });
+  const countdownTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const recordsRef = useRef<Records>({});
   const [phase, setPhase] = useState<Phase>("select");
   const [stats, setStats] = useState<Stats>({ ...EMPTY_STATS });
   const [offsetMs, setOffsetMs] = useState(0);
+  const [countdown, setCountdown] = useState("3");
+  const [sfxEnabled, setSfxEnabled] = useState(true);
+  const [reducedFx, setReducedFx] = useState(false);
+  const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [resultMeta, setResultMeta] = useState<ResultMeta>({ newBest: false, previousBest: 0, fullCombo: false });
   const chartSize = useMemo(() => buildChart(track, difficulty).length, [track, difficulty]);
 
   useEffect(() => {
@@ -218,26 +239,70 @@ export default function Home() {
   }, [track, difficulty]);
 
   useEffect(() => {
-    const stored = window.localStorage.getItem("neon-input-offset");
-    if (stored) setOffsetMs(Number(stored) || 0);
-    const savedRecords = window.localStorage.getItem("neon-records-v1");
-    if (savedRecords) {
-      try { setRecords(JSON.parse(savedRecords)); } catch { /* ignore invalid local data */ }
-    }
+    recordsRef.current = records;
+  }, [records]);
+
+  useEffect(() => {
+    const hydrationFrame = requestAnimationFrame(() => {
+      const stored = window.localStorage.getItem("neon-input-offset");
+      if (stored) setOffsetMs(Number(stored) || 0);
+      const savedRecords = window.localStorage.getItem("neon-records-v1");
+      if (savedRecords) {
+        try { setRecords(JSON.parse(savedRecords)); } catch { /* ignore invalid local data */ }
+      }
+      const savedSettings = window.localStorage.getItem("neon-settings-v1");
+      if (savedSettings) {
+        try {
+          const settings = JSON.parse(savedSettings) as Partial<{ sfx: boolean; reducedFx: boolean; vibration: boolean }>;
+          if (typeof settings.sfx === "boolean") setSfxEnabled(settings.sfx);
+          if (typeof settings.reducedFx === "boolean") setReducedFx(settings.reducedFx);
+          if (typeof settings.vibration === "boolean") setVibrationEnabled(settings.vibration);
+        } catch { /* ignore invalid local data */ }
+      } else if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        setReducedFx(true);
+      }
+    });
     const audio = new Audio(TRACKS[0].audio);
     audio.preload = "auto";
     audioRef.current = audio;
     return () => {
+      cancelAnimationFrame(hydrationFrame);
+      countdownTimersRef.current.forEach(clearTimeout);
       audio.pause();
       audio.src = "";
+      void audioContextRef.current?.close();
     };
   }, []);
+
+  const saveSettings = (next: { sfx: boolean; reducedFx: boolean; vibration: boolean }) => {
+    window.localStorage.setItem("neon-settings-v1", JSON.stringify(next));
+  };
 
   const updateOffset = (next: number) => {
     const value = Math.max(-150, Math.min(150, next));
     setOffsetMs(value);
     window.localStorage.setItem("neon-input-offset", String(value));
   };
+
+  const playHitSound = useCallback((judge: Judge) => {
+    if (!sfxEnabled || judge === "MISS" || judge === "EMPTY") return;
+    const AudioContextClass = window.AudioContext;
+    const context = audioContextRef.current ?? new AudioContextClass();
+    audioContextRef.current = context;
+    if (context.state === "suspended") void context.resume();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const now = context.currentTime;
+    const frequency = judge === "PERFECT" ? 1040 : judge === "GREAT" ? 820 : 560;
+    oscillator.type = judge === "PERFECT" ? "sine" : "triangle";
+    oscillator.frequency.setValueAtTime(frequency, now);
+    oscillator.frequency.exponentialRampToValueAtTime(frequency * 1.35, now + 0.055);
+    gain.gain.setValueAtTime(judge === "PERFECT" ? 0.055 : 0.038, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.085);
+    oscillator.connect(gain).connect(context.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.09);
+  }, [sfxEnabled]);
 
   const spawnHitEffect = useCallback((lane: number, judge: Judge) => {
     const canvas = canvasRef.current;
@@ -246,7 +311,7 @@ export default function Home() {
     const x = laneWidth * (lane + 0.5);
     const y = canvas.height - Math.max(92, canvas.height * 0.13);
     const power = judge === "PERFECT" ? 1 : judge === "GREAT" ? 0.72 : 0.46;
-    const count = Math.round(28 * power);
+    const count = Math.round(28 * power * (reducedFx ? 0.25 : 1));
 
     for (let i = 0; i < count; i += 1) {
       const angle = Math.random() * Math.PI * 2;
@@ -263,11 +328,13 @@ export default function Home() {
       });
     }
 
-    pulsesRef.current.push({ x, y, life: 1, color: COLORS[lane] });
-    shakeRef.current = Math.max(shakeRef.current, judge === "PERFECT" ? 10 : judge === "GREAT" ? 6 : 3);
-    flashRef.current = Math.max(flashRef.current, judge === "PERFECT" ? 0.2 : 0.1);
-    if (navigator.vibrate) navigator.vibrate(judge === "PERFECT" ? 16 : 8);
-  }, []);
+    pulsesRef.current.push({ x, y, life: reducedFx ? 0.42 : 1, color: COLORS[lane] });
+    if (!reducedFx) {
+      shakeRef.current = Math.max(shakeRef.current, judge === "PERFECT" ? 8 : judge === "GREAT" ? 4 : 2);
+      if (judge === "PERFECT") flashRef.current = Math.max(flashRef.current, 0.12);
+    }
+    if (vibrationEnabled && navigator.vibrate) navigator.vibrate(judge === "PERFECT" ? 16 : 8);
+  }, [reducedFx, vibrationEnabled]);
 
   const registerMiss = useCallback((lane: number, currentTime: number) => {
     const current = statsRef.current;
@@ -277,9 +344,9 @@ export default function Home() {
       sync: Math.max(0, current.sync - 12),
       miss: current.miss + 1,
     };
-    feedbackRef.current = { judge: "MISS", at: currentTime, lane };
-    shakeRef.current = Math.max(shakeRef.current, 3);
-  }, []);
+    feedbacksRef.current.push({ judge: "MISS", at: currentTime, lane });
+    if (!reducedFx) shakeRef.current = Math.max(shakeRef.current, 3);
+  }, [reducedFx]);
 
   const hitLane = useCallback(
     (lane: number) => {
@@ -287,6 +354,7 @@ export default function Home() {
       const audio = audioRef.current;
       if (!audio) return;
       const judgedTime = audio.currentTime + offsetMs / 1000;
+      pressedUntilRef.current[lane] = performance.now() + 95;
       let candidate: Note | undefined;
       let closest = Infinity;
 
@@ -301,16 +369,24 @@ export default function Home() {
       }
 
       if (!candidate || closest > 0.15) {
-        shakeRef.current = Math.max(shakeRef.current, 1.5);
+        const current = statsRef.current;
+        statsRef.current = { ...current, combo: 0, sync: Math.max(0, current.sync - 5) };
+        feedbacksRef.current.push({ judge: "EMPTY", at: audio.currentTime, lane });
+        if (!reducedFx) shakeRef.current = Math.max(shakeRef.current, 1.5);
         return;
       }
 
       candidate.hit = true;
       const judge: Judge = closest <= 0.04 ? "PERFECT" : closest <= 0.08 ? "GREAT" : "GOOD";
+      const delta = judgedTime - candidate.time;
+      const timing: Timing = Math.abs(delta) <= 0.012 ? "JUST" : delta < 0 ? "EARLY" : "LATE";
       const current = statsRef.current;
       const combo = current.combo + 1;
-      let sync = Math.min(100, current.sync + (judge === "PERFECT" ? 8 : judge === "GREAT" ? 4 : 1));
-      if (sync >= 100 && audio.currentTime > overdriveUntilRef.current) {
+      const wasOverdrive = audio.currentTime < overdriveUntilRef.current;
+      let sync = wasOverdrive
+        ? current.sync
+        : Math.min(100, current.sync + (judge === "PERFECT" ? 1.5 : judge === "GREAT" ? 0.8 : 0.3));
+      if (sync >= 100 && !wasOverdrive) {
         overdriveUntilRef.current = audio.currentTime + 8;
         sync = 100;
       }
@@ -329,22 +405,25 @@ export default function Home() {
         good: current.good + (judge === "GOOD" ? 1 : 0),
         overdrive,
       };
-      feedbackRef.current = { judge, at: audio.currentTime, lane };
+      feedbacksRef.current.push({ judge, at: audio.currentTime, lane, timing });
+      playHitSound(judge);
       spawnHitEffect(lane, judge);
     },
-    [offsetMs, spawnHitEffect],
+    [offsetMs, playHitSound, reducedFx, spawnHitEffect],
   );
 
   const resetGame = useCallback(() => {
     notesRef.current = buildChart(track, difficulty);
     particlesRef.current = [];
     pulsesRef.current = [];
-    feedbackRef.current = null;
+    feedbacksRef.current = [];
+    pressedUntilRef.current = [0, 0, 0, 0];
     statsRef.current = { ...EMPTY_STATS };
     setStats({ ...EMPTY_STATS });
     shakeRef.current = 0;
     flashRef.current = 0;
     overdriveUntilRef.current = 0;
+    setResultMeta({ newBest: false, previousBest: 0, fullCombo: false });
   }, [track, difficulty]);
 
   const startGame = useCallback(async () => {
@@ -355,10 +434,22 @@ export default function Home() {
     if (audio.src !== wantedSource) audio.src = wantedSource;
     audio.currentTime = 0;
     audio.volume = 0.88;
+    countdownTimersRef.current.forEach(clearTimeout);
+    countdownTimersRef.current = [];
     try {
       await audio.play();
-      phaseRef.current = "playing";
-      setPhase("playing");
+      setCountdown("3");
+      phaseRef.current = "countdown";
+      setPhase("countdown");
+      countdownTimersRef.current = [
+        setTimeout(() => setCountdown("2"), 850),
+        setTimeout(() => setCountdown("1"), 1700),
+        setTimeout(() => setCountdown("GO"), 2550),
+        setTimeout(() => {
+          phaseRef.current = "playing";
+          setPhase("playing");
+        }, 3000),
+      ];
     } catch {
       phaseRef.current = "ready";
       setPhase("ready");
@@ -366,6 +457,8 @@ export default function Home() {
   }, [resetGame, track]);
 
   const openTrackSelect = useCallback(() => {
+    countdownTimersRef.current.forEach(clearTimeout);
+    countdownTimersRef.current = [];
     audioRef.current?.pause();
     phaseRef.current = "select";
     setPhase("select");
@@ -379,9 +472,14 @@ export default function Home() {
       phaseRef.current = "paused";
       setPhase("paused");
     } else if (phaseRef.current === "paused") {
-      await audio.play();
-      phaseRef.current = "playing";
-      setPhase("playing");
+      try {
+        await audio.play();
+        phaseRef.current = "playing";
+        setPhase("playing");
+      } catch {
+        phaseRef.current = "paused";
+        setPhase("paused");
+      }
     }
   }, []);
 
@@ -442,7 +540,12 @@ export default function Home() {
         }
 
         const current = statsRef.current;
-        const nextSync = isOverdrive ? Math.max(0, current.sync - dt * 4) : current.sync;
+        let nextSync = current.sync;
+        if (isOverdrive) nextSync = Math.max(0, current.sync - dt * 12.5);
+        else if (overdriveUntilRef.current > 0) {
+          nextSync = 0;
+          overdriveUntilRef.current = 0;
+        }
         statsRef.current = {
           ...current,
           sync: nextSync,
@@ -456,10 +559,21 @@ export default function Home() {
           const finalStats = { ...statsRef.current, progress: 1 };
           const finalAccuracy = getAccuracy(finalStats);
           const recordKey = `${activeTrack.id}:${activeDifficulty}`;
+          const previousRecord = recordsRef.current[recordKey];
+          const fullCombo = finalStats.miss === 0;
+          const newBest = !previousRecord || finalStats.score > previousRecord.score;
+          setResultMeta({ newBest, previousBest: previousRecord?.score ?? 0, fullCombo });
           setStats(finalStats);
           setRecords((previousRecords) => {
-            const previousRecord = previousRecords[recordKey];
-            if (previousRecord && previousRecord.score >= finalStats.score) return previousRecords;
+            const storedRecord = previousRecords[recordKey];
+            if (storedRecord && storedRecord.score >= finalStats.score) {
+              if (fullCombo && !storedRecord.fullCombo) {
+                const upgraded = { ...previousRecords, [recordKey]: { ...storedRecord, fullCombo: true } };
+                window.localStorage.setItem("neon-records-v1", JSON.stringify(upgraded));
+                return upgraded;
+              }
+              return previousRecords;
+            }
             const nextRecords = {
               ...previousRecords,
               [recordKey]: {
@@ -467,6 +581,7 @@ export default function Home() {
                 accuracy: finalAccuracy,
                 grade: getGrade(finalAccuracy),
                 maxCombo: finalStats.maxCombo,
+                fullCombo,
               },
             };
             window.localStorage.setItem("neon-records-v1", JSON.stringify(nextRecords));
@@ -554,14 +669,18 @@ export default function Home() {
 
       for (let lane = 0; lane < 4; lane += 1) {
         const cx = lane * laneWidth + laneWidth / 2;
+        const pressed = now < pressedUntilRef.current[lane];
         ctx.beginPath();
-        ctx.arc(cx, hitY, Math.min(24, laneWidth * 0.17), 0, Math.PI * 2);
-        ctx.fillStyle = "#060916";
+        ctx.arc(cx, hitY, Math.min(pressed ? 29 : 24, laneWidth * 0.19), 0, Math.PI * 2);
+        ctx.fillStyle = pressed ? COLORS[lane] : "#060916";
         ctx.fill();
         ctx.lineWidth = 3;
         ctx.strokeStyle = COLORS[lane];
+        ctx.shadowColor = COLORS[lane];
+        ctx.shadowBlur = pressed ? 28 : 0;
         ctx.stroke();
-        ctx.fillStyle = "rgba(255,255,255,.82)";
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = pressed ? "#06101a" : "rgba(255,255,255,.82)";
         ctx.font = `700 ${Math.max(13, height * 0.02)}px ui-monospace, monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -592,25 +711,31 @@ export default function Home() {
       particlesRef.current = particlesRef.current.filter((particle) => particle.life > 0);
       ctx.globalAlpha = 1;
 
-      const feedback = feedbackRef.current;
-      if (feedback) {
+      for (const feedback of feedbacksRef.current) {
         const age = currentTime - feedback.at;
         if (age < 0.62) {
           const strength = 1 - age / 0.62;
           const size = feedback.judge === "PERFECT" ? 48 : feedback.judge === "GREAT" ? 40 : 32;
           ctx.save();
-          ctx.translate(width / 2, height * 0.61);
+          ctx.translate(laneWidth * (feedback.lane + 0.5), height * 0.61);
           ctx.scale(1 + strength * 0.18, 1 + strength * 0.18);
           ctx.globalAlpha = Math.min(1, strength * 2.5);
           ctx.font = `900 ${Math.max(28, size * (height / 800))}px Arial Black, sans-serif`;
           ctx.textAlign = "center";
-          ctx.fillStyle = feedback.judge === "MISS" ? "#ff365f" : feedback.judge === "GOOD" ? "#ffb84d" : "#ffffff";
+          ctx.fillStyle = feedback.judge === "MISS" || feedback.judge === "EMPTY" ? "#ff365f" : feedback.judge === "GOOD" ? "#ffb84d" : "#ffffff";
           ctx.shadowColor = feedback.judge === "PERFECT" ? "#36f1ff" : COLORS[feedback.lane];
           ctx.shadowBlur = feedback.judge === "PERFECT" ? 36 : 22;
           ctx.fillText(feedback.judge, 0, 0);
+          if (feedback.timing && feedback.timing !== "JUST") {
+            ctx.shadowBlur = 0;
+            ctx.font = `800 ${Math.max(10, height * 0.016)}px ui-monospace, monospace`;
+            ctx.fillStyle = feedback.timing === "EARLY" ? "#9aa9ff" : "#ff9edc";
+            ctx.fillText(feedback.timing, 0, Math.max(22, height * 0.038));
+          }
           ctx.restore();
         }
       }
+      feedbacksRef.current = feedbacksRef.current.filter((feedback) => currentTime - feedback.at < 0.62);
 
       if (flashRef.current > 0.005) {
         ctx.globalAlpha = flashRef.current;
@@ -658,7 +783,7 @@ export default function Home() {
           className="icon-button"
           onClick={phase === "playing" || phase === "paused" ? togglePause : openTrackSelect}
           disabled={phase === "select"}
-          aria-label={phase === "playing" || phase === "paused" ? "일시 정지" : "곡 선택"}
+          aria-label={phase === "paused" ? "게임 계속하기" : phase === "playing" ? "일시 정지" : "곡 선택"}
         >
           {phase === "paused" ? "▶" : phase === "playing" ? "Ⅱ" : "≡"}
         </button>
@@ -674,7 +799,7 @@ export default function Home() {
             <span>{stats.overdrive ? "OVERDRIVE" : "SYNC LEVEL"}</span>
             <b>{Math.round(stats.sync)}%</b>
           </div>
-          <div className="sync-track"><i style={{ width: `${stats.sync}%` }} /></div>
+          <div className="sync-track" role="progressbar" aria-label="오버드라이브 충전량" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(stats.sync)}><i style={{ width: `${stats.sync}%` }} /></div>
         </div>
         <div className="combo-block">
           <strong>{stats.combo}</strong>
@@ -685,18 +810,18 @@ export default function Home() {
       <section className="playfield-wrap">
         <div className="song-rail">
           <span>{formatTime(currentTime)}</span>
-          <div><i style={{ width: `${stats.progress * 100}%` }} /></div>
+          <div role="progressbar" aria-label="곡 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(stats.progress * 100)}><i style={{ width: `${stats.progress * 100}%` }} /></div>
           <span>{formatTime(track.duration)}</span>
         </div>
 
         <div className="playfield-frame">
           <canvas ref={canvasRef} onPointerDown={handlePointer} aria-label="4레인 리듬 게임 플레이 영역" />
           {phase === "select" && (
-            <div className="overlay select-panel">
+            <div className="overlay select-panel" role="dialog" aria-modal="true" aria-labelledby="track-select-title">
               <div className="select-heading">
                 <div>
                   <p className="mission-code">SIGNAL LIBRARY // 03 TRACKS</p>
-                  <h2>Choose your signal.</h2>
+                  <h2 id="track-select-title">Choose your signal.</h2>
                 </div>
                 <p>곡과 난이도를 선택해 프로토콜을 시작하세요.</p>
               </div>
@@ -710,6 +835,7 @@ export default function Home() {
                       className={`track-card ${selected ? "selected" : ""}`}
                       style={{ "--track-accent": item.accent } as CSSProperties}
                       onClick={() => setSelectedTrackId(item.id)}
+                      aria-pressed={selected}
                     >
                       <span className="track-index">0{index + 1}</span>
                       <span className="track-wave"><i /><i /><i /><i /><i /><i /></span>
@@ -725,11 +851,37 @@ export default function Home() {
                 <span>DIFFICULTY</span>
                 <div>
                   {DIFFICULTIES.map((item) => (
-                    <button key={item} className={difficulty === item ? "active" : ""} onClick={() => setDifficulty(item)}>
-                      {item} <b>LV.{LEVELS[item]}</b>
+                    <button key={item} className={difficulty === item ? "active" : ""} onClick={() => setDifficulty(item)} aria-pressed={difficulty === item}>
+                      {item} <b>LV.{track.levels[item]}</b>
                     </button>
                   ))}
                 </div>
+              </div>
+              <div className="quick-settings" aria-label="게임 설정">
+                <button
+                  aria-pressed={sfxEnabled}
+                  onClick={() => {
+                    const next = !sfxEnabled;
+                    setSfxEnabled(next);
+                    saveSettings({ sfx: next, reducedFx, vibration: vibrationEnabled });
+                  }}
+                >HIT SFX {sfxEnabled ? "ON" : "OFF"}</button>
+                <button
+                  aria-pressed={reducedFx}
+                  onClick={() => {
+                    const next = !reducedFx;
+                    setReducedFx(next);
+                    saveSettings({ sfx: sfxEnabled, reducedFx: next, vibration: vibrationEnabled });
+                  }}
+                >REDUCED FX {reducedFx ? "ON" : "OFF"}</button>
+                <button
+                  aria-pressed={vibrationEnabled}
+                  onClick={() => {
+                    const next = !vibrationEnabled;
+                    setVibrationEnabled(next);
+                    saveSettings({ sfx: sfxEnabled, reducedFx, vibration: next });
+                  }}
+                >VIBRATION {vibrationEnabled ? "ON" : "OFF"}</button>
               </div>
               <div className="select-action">
                 <p>{activeRecord ? `BEST ${activeRecord.score.toLocaleString()} · ${activeRecord.accuracy.toFixed(2)}%` : "새로운 신호가 기다리고 있습니다."}</p>
@@ -740,9 +892,9 @@ export default function Home() {
             </div>
           )}
           {phase === "ready" && (
-            <div className="overlay ready-panel">
-              <p className="mission-code">{track.protocol} · {difficulty} LV.{LEVELS[difficulty]}</p>
-              <h2>{track.title}</h2>
+            <div className="overlay ready-panel" role="dialog" aria-modal="true" aria-labelledby="ready-title">
+              <p className="mission-code">{track.protocol} · {difficulty} LV.{track.levels[difficulty]}</p>
+              <h2 id="ready-title">{track.title}</h2>
               <p>신호가 판정선에 닿는 순간 탭하세요.<br />정확할수록 네온 코어가 강하게 폭발합니다.</p>
               <div className="track-spec">
                 <span>{track.bpm.toFixed(2)} BPM</span><span>4 LANES</span><span>{chartSize} NOTES</span>
@@ -753,21 +905,34 @@ export default function Home() {
             </div>
           )}
 
+          {phase === "countdown" && (
+            <div className="overlay countdown-panel" role="status" aria-live="assertive">
+              <p className="mission-code">SYNCING INPUT</p>
+              <strong>{countdown}</strong>
+            </div>
+          )}
+
           {phase === "paused" && (
-            <div className="overlay pause-panel">
+            <div className="overlay pause-panel" role="dialog" aria-modal="true" aria-labelledby="pause-title">
               <p className="mission-code">SYSTEM SUSPENDED</p>
-              <h2>PAUSED</h2>
+              <h2 id="pause-title">PAUSED</h2>
               <button className="primary-button" onClick={togglePause}>RESUME <b>▶</b></button>
               <button className="text-button" onClick={startGame}>처음부터 다시 시작</button>
+              <button className="text-button" onClick={openTrackSelect}>곡 선택으로 나가기</button>
             </div>
           )}
 
           {phase === "results" && (
-            <div className="overlay result-panel">
+            <div className="overlay result-panel" role="dialog" aria-modal="true" aria-labelledby="result-title">
               <div className="grade">{getGrade(accuracy)}</div>
               <div className="result-copy">
                 <p className="mission-code">PROTOCOL COMPLETE</p>
-                <h2>{accuracy.toFixed(2)}% SYNCED</h2>
+                <h2 id="result-title">{accuracy.toFixed(2)}% SYNCED</h2>
+                <div className="result-badges">
+                  {resultMeta.newBest && <span>NEW BEST</span>}
+                  {resultMeta.fullCombo && <span>FULL COMBO</span>}
+                </div>
+                <p className="result-score">{stats.score.toLocaleString()} <small>SCORE</small></p>
                 <div className="judge-grid">
                   <span>PERFECT <b>{stats.perfect}</b></span>
                   <span>GREAT <b>{stats.great}</b></span>
@@ -783,13 +948,17 @@ export default function Home() {
         </div>
       </section>
 
+      <p className="sr-only" aria-live="polite">
+        {phase === "playing" ? `${stats.combo} 콤보, 점수 ${stats.score}` : phase === "results" ? `플레이 완료, 정확도 ${accuracy.toFixed(2)} 퍼센트` : ""}
+      </p>
+
       <footer className="control-strip">
         <div>
           <span className="status-light" />
           <p><b>{track.title}</b><small>Original Lyria generation · {difficulty}</small></p>
         </div>
         <div className="latency-control">
-          <span>INPUT OFFSET</span>
+          <span title="노트보다 입력이 늦게 판정되면 값을 올리고, 빠르게 판정되면 내리세요.">INPUT OFFSET</span>
           <button onClick={() => updateOffset(offsetMs - 10)} aria-label="입력 오프셋 10밀리초 감소">−</button>
           <b>{offsetMs > 0 ? "+" : ""}{offsetMs}ms</b>
           <button onClick={() => updateOffset(offsetMs + 10)} aria-label="입력 오프셋 10밀리초 증가">＋</button>

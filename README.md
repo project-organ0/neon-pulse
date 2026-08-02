@@ -1,100 +1,47 @@
-# vinext-starter
+# Neon Pulse Protocol
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+오리지널 AI 생성 음악 3곡으로 즐기는 브라우저 기반 4레인 리듬 게임입니다.
 
-## Prerequisites
+## 현재 콘텐츠
 
-- Node.js `>=22.13.0`
+- Circuit Bloom — melodic future bass
+- Neon Pulse Protocol — electro synthwave
+- Overclock Horizon — cyber drum & bass
+- 곡별 EASY / NORMAL / HARD
+- 키보드 `D F J K` 및 모바일 터치 입력
+- PERFECT / GREAT / GOOD / MISS, EARLY / LATE 피드백
+- 콤보, 점수, 오버드라이브, 최고 기록, FULL COMBO
+- 타격음, 모션 축소, 진동 설정
 
-## Quick Start
+## 로컬 실행
+
+Node.js 22.13 이상이 필요합니다.
 
 ```bash
 npm install
 npm run dev
-npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 품질 확인
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
-
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```bash
+npm run lint
+npm test
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+`npm test`는 프로덕션 빌드 후 서버 렌더링, 세 곡의 오디오 에셋, 핵심 판정·설정·접근성 기능을 확인합니다.
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
+## 주요 파일
 
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
+- `app/page.tsx`: 게임 상태, 채보, 입력, 판정, 캔버스 렌더링
+- `app/globals.css`: 전체 UI와 반응형 스타일
+- `public/audio/`: 배포용 OGG 음원
+- `docs/AI_PLAYTEST_REPORT.md`: 9명 AI 플레이테스트 및 개선 보고서
 
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
+## 음악 권리 메모
 
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
+세 곡은 Flow Music의 Lyria를 사용해 생성했습니다. 공개 또는 상업 출시 전 생성 당시 계정 플랜과 이용 약관, 생성 날짜를 별도 증빙으로 보관해야 합니다. 저장소의 음원 존재 자체가 제3자에게 이용 권리를 부여하지는 않습니다.
 
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
+## 배포
 
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+이 프로젝트는 OpenAI Sites 설정인 `.openai/hosting.json`을 사용합니다. 현재 배포는 비공개 접근 정책을 유지합니다.
