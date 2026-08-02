@@ -1,18 +1,71 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
-const BPM = 155.12;
-const BEAT = 60 / BPM;
-const GRID_OFFSET = 0.331;
-const SONG_LENGTH = 121.696;
 const TRAVEL_TIME = 1.75;
 const KEYS = ["D", "F", "J", "K"];
 const KEY_CODES = ["KeyD", "KeyF", "KeyJ", "KeyK"];
 const COLORS = ["#36f1ff", "#7b61ff", "#ff4fd8", "#ffb84d"];
 
-type Phase = "ready" | "playing" | "paused" | "results";
+type Difficulty = "EASY" | "NORMAL" | "HARD";
+type Phase = "select" | "ready" | "playing" | "paused" | "results";
 type Judge = "PERFECT" | "GREAT" | "GOOD" | "MISS";
+
+type Track = {
+  id: string;
+  protocol: string;
+  title: string;
+  subtitle: string;
+  bpm: number;
+  gridOffset: number;
+  duration: number;
+  audio: string;
+  accent: string;
+  seed: number;
+};
+
+const TRACKS: Track[] = [
+  {
+    id: "circuit-bloom",
+    protocol: "PROTOCOL // 001",
+    title: "Circuit Bloom",
+    subtitle: "Melodic future bass · Entry signal",
+    bpm: 127.9,
+    gridOffset: 0.464,
+    duration: 122.88,
+    audio: "/audio/circuit-bloom.ogg",
+    accent: "#41ff9a",
+    seed: 3,
+  },
+  {
+    id: "neon-pulse-protocol",
+    protocol: "PROTOCOL // 002",
+    title: "Neon Pulse Protocol",
+    subtitle: "Electro synthwave · Core signal",
+    bpm: 155.12,
+    gridOffset: 0.331,
+    duration: 121.696,
+    audio: "/audio/neon-pulse-protocol.ogg",
+    accent: "#36f1ff",
+    seed: 11,
+  },
+  {
+    id: "overclock-horizon",
+    protocol: "PROTOCOL // 003",
+    title: "Overclock Horizon",
+    subtitle: "Cyber drum & bass · Boss signal",
+    bpm: 170.26,
+    gridOffset: 0.195,
+    duration: 121.344,
+    audio: "/audio/overclock-horizon.ogg",
+    accent: "#ff4fd8",
+    seed: 19,
+  },
+];
+
+const DIFFICULTIES: Difficulty[] = ["EASY", "NORMAL", "HARD"];
+const LEVELS: Record<Difficulty, number> = { EASY: 3, NORMAL: 6, HARD: 9 };
 
 type Note = {
   id: number;
@@ -53,6 +106,9 @@ type Stats = {
   overdrive: boolean;
 };
 
+type RecordEntry = { score: number; accuracy: number; grade: string; maxCombo: number };
+type Records = Record<string, RecordEntry>;
+
 const EMPTY_STATS: Stats = {
   score: 0,
   combo: 0,
@@ -66,8 +122,10 @@ const EMPTY_STATS: Stats = {
   overdrive: false,
 };
 
-function buildChart(): Note[] {
+function buildChart(track: Track, difficulty: Difficulty): Note[] {
   const notes: Note[] = [];
+  const beat = 60 / track.bpm;
+  const division = difficulty === "HARD" ? 4 : 2;
   const lanePatterns = [
     [0, 1, 2, 3, 1, 2, 0, 3],
     [0, 2, 1, 3, 2, 0, 3, 1],
@@ -76,30 +134,36 @@ function buildChart(): Note[] {
   let id = 0;
 
   for (let step = 0; ; step += 1) {
-    const time = GRID_OFFSET + step * (BEAT / 2);
-    if (time > 119.2) break;
+    const time = track.gridOffset + step * (beat / division);
+    if (time > track.duration - 2.2) break;
 
-    const beatIndex = Math.floor(step / 2);
-    const half = step % 2;
+    const beatIndex = Math.floor(step / division);
+    const sub = step % division;
     let add = false;
 
-    if (time >= 3.8 && time < 8) add = half === 0 && beatIndex % 2 === 0;
-    else if (time < 32) add = half === 0 || beatIndex % 8 === 7;
-    else if (time < 48) add = half === 0 || beatIndex % 4 >= 2;
-    else if (time < 72) add = half === 0 || beatIndex % 4 !== 0;
-    else if (time < 88) add = half === 0 && beatIndex % 2 === 0;
-    else if (time < 112) add = half === 0 || beatIndex % 4 !== 0;
-    else add = half === 0;
+    const inDrop = (time >= 48 && time < 72) || (time >= 88 && time < 112);
+    const inBreak = time >= 72 && time < 88;
+    if (time < 3.8) add = false;
+    else if (difficulty === "EASY") {
+      add = sub === 0 && (inDrop || beatIndex % 2 === 0);
+    } else if (difficulty === "NORMAL") {
+      if (time < 8) add = sub === 0 && beatIndex % 2 === 0;
+      else if (inBreak) add = sub === 0 && beatIndex % 2 === 0;
+      else add = sub === 0 || (sub === 1 && (inDrop || beatIndex % 4 === 3));
+    } else {
+      const eighth = sub === 0 || sub === 2;
+      const burst = (sub === 1 || sub === 3) && beatIndex % 4 === 3;
+      add = inBreak ? sub === 0 : eighth || burst;
+    }
 
     if (!add) continue;
 
-    const section = time < 48 ? 0 : time < 88 ? 1 : 2;
-    const pattern = lanePatterns[section];
-    const lane = pattern[(step + Math.floor(step / 9)) % pattern.length];
+    const section = (time < 48 ? 0 : time < 88 ? 1 : 2) + track.seed;
+    const lanePattern = lanePatterns[section % lanePatterns.length];
+    const lane = lanePattern[(step + Math.floor(step / 9) + track.seed) % lanePattern.length];
     notes.push({ id: id++, time, lane, hit: false, missed: false });
 
-    const isDrop = (time >= 48 && time < 72) || (time >= 88 && time < 112);
-    if (isDrop && half === 0 && beatIndex % 8 === 0) {
+    if (difficulty !== "EASY" && inDrop && sub === 0 && beatIndex % 8 === 0) {
       notes.push({ id: id++, time, lane: (lane + 2) % 4, hit: false, missed: false });
     }
   }
@@ -127,9 +191,13 @@ function getGrade(accuracy: number) {
 }
 
 export default function Home() {
+  const [selectedTrackId, setSelectedTrackId] = useState(TRACKS[0].id);
+  const [difficulty, setDifficulty] = useState<Difficulty>("EASY");
+  const [records, setRecords] = useState<Records>({});
+  const track = useMemo(() => TRACKS.find((item) => item.id === selectedTrackId) ?? TRACKS[0], [selectedTrackId]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const notesRef = useRef<Note[]>(buildChart());
+  const notesRef = useRef<Note[]>(buildChart(TRACKS[0], "EASY"));
   const particlesRef = useRef<Particle[]>([]);
   const pulsesRef = useRef<Pulse[]>([]);
   const feedbackRef = useRef<{ judge: Judge; at: number; lane: number } | null>(null);
@@ -139,15 +207,24 @@ export default function Home() {
   const flashRef = useRef(0);
   const overdriveUntilRef = useRef(0);
   const lastHudUpdateRef = useRef(0);
-  const [phase, setPhase] = useState<Phase>("ready");
+  const selectionRef = useRef({ track: TRACKS[0], difficulty: "EASY" as Difficulty });
+  const [phase, setPhase] = useState<Phase>("select");
   const [stats, setStats] = useState<Stats>({ ...EMPTY_STATS });
   const [offsetMs, setOffsetMs] = useState(0);
-  const chartSize = useMemo(() => buildChart().length, []);
+  const chartSize = useMemo(() => buildChart(track, difficulty).length, [track, difficulty]);
+
+  useEffect(() => {
+    selectionRef.current = { track, difficulty };
+  }, [track, difficulty]);
 
   useEffect(() => {
     const stored = window.localStorage.getItem("neon-input-offset");
     if (stored) setOffsetMs(Number(stored) || 0);
-    const audio = new Audio("/audio/neon-pulse-protocol.ogg");
+    const savedRecords = window.localStorage.getItem("neon-records-v1");
+    if (savedRecords) {
+      try { setRecords(JSON.parse(savedRecords)); } catch { /* ignore invalid local data */ }
+    }
+    const audio = new Audio(TRACKS[0].audio);
     audio.preload = "auto";
     audioRef.current = audio;
     return () => {
@@ -259,7 +336,7 @@ export default function Home() {
   );
 
   const resetGame = useCallback(() => {
-    notesRef.current = buildChart();
+    notesRef.current = buildChart(track, difficulty);
     particlesRef.current = [];
     pulsesRef.current = [];
     feedbackRef.current = null;
@@ -268,12 +345,14 @@ export default function Home() {
     shakeRef.current = 0;
     flashRef.current = 0;
     overdriveUntilRef.current = 0;
-  }, []);
+  }, [track, difficulty]);
 
   const startGame = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio) return;
     resetGame();
+    const wantedSource = new URL(track.audio, window.location.href).href;
+    if (audio.src !== wantedSource) audio.src = wantedSource;
     audio.currentTime = 0;
     audio.volume = 0.88;
     try {
@@ -284,7 +363,13 @@ export default function Home() {
       phaseRef.current = "ready";
       setPhase("ready");
     }
-  }, [resetGame]);
+  }, [resetGame, track]);
+
+  const openTrackSelect = useCallback(() => {
+    audioRef.current?.pause();
+    phaseRef.current = "select";
+    setPhase("select");
+  }, []);
 
   const togglePause = useCallback(async () => {
     const audio = audioRef.current;
@@ -338,6 +423,9 @@ export default function Home() {
       previous = now;
       const audio = audioRef.current;
       const currentTime = audio?.currentTime ?? 0;
+      const activeTrack = selectionRef.current.track;
+      const activeDifficulty = selectionRef.current.difficulty;
+      const beat = 60 / activeTrack.bpm;
       const width = canvas.width;
       const height = canvas.height;
       const laneWidth = width / 4;
@@ -358,14 +446,32 @@ export default function Home() {
         statsRef.current = {
           ...current,
           sync: nextSync,
-          progress: Math.min(1, currentTime / SONG_LENGTH),
+          progress: Math.min(1, currentTime / activeTrack.duration),
           overdrive: isOverdrive,
         };
 
-        if (audio?.ended || currentTime >= SONG_LENGTH - 0.05) {
+        if (audio?.ended || currentTime >= activeTrack.duration - 0.05) {
           audio?.pause();
           phaseRef.current = "results";
-          setStats({ ...statsRef.current });
+          const finalStats = { ...statsRef.current, progress: 1 };
+          const finalAccuracy = getAccuracy(finalStats);
+          const recordKey = `${activeTrack.id}:${activeDifficulty}`;
+          setStats(finalStats);
+          setRecords((previousRecords) => {
+            const previousRecord = previousRecords[recordKey];
+            if (previousRecord && previousRecord.score >= finalStats.score) return previousRecords;
+            const nextRecords = {
+              ...previousRecords,
+              [recordKey]: {
+                score: finalStats.score,
+                accuracy: finalAccuracy,
+                grade: getGrade(finalAccuracy),
+                maxCombo: finalStats.maxCombo,
+              },
+            };
+            window.localStorage.setItem("neon-records-v1", JSON.stringify(nextRecords));
+            return nextRecords;
+          });
           setPhase("results");
         }
 
@@ -398,9 +504,9 @@ export default function Home() {
       }
       ctx.globalAlpha = 1;
 
-      const beatPhase = ((currentTime - GRID_OFFSET) % BEAT + BEAT) % BEAT;
-      for (let i = -1; i < Math.ceil(TRAVEL_TIME / BEAT) + 2; i += 1) {
-        const secondsAhead = i * BEAT - beatPhase;
+      const beatPhase = ((currentTime - activeTrack.gridOffset) % beat + beat) % beat;
+      for (let i = -1; i < Math.ceil(TRAVEL_TIME / beat) + 2; i += 1) {
+        const secondsAhead = i * beat - beatPhase;
         const y = hitY - (secondsAhead / TRAVEL_TIME) * hitY;
         if (y < 0 || y > hitY) continue;
         ctx.strokeStyle = i % 4 === 0 ? "rgba(120,235,255,.2)" : "rgba(255,255,255,.07)";
@@ -532,7 +638,8 @@ export default function Home() {
   };
 
   const accuracy = getAccuracy(stats);
-  const currentTime = stats.progress * SONG_LENGTH;
+  const currentTime = stats.progress * track.duration;
+  const activeRecord = records[`${track.id}:${difficulty}`];
 
   return (
     <main className="game-shell">
@@ -547,8 +654,13 @@ export default function Home() {
             <h1>NEON PULSE PROTOCOL</h1>
           </div>
         </div>
-        <button className="icon-button" onClick={togglePause} disabled={phase === "ready" || phase === "results"} aria-label="일시 정지">
-          {phase === "paused" ? "▶" : "Ⅱ"}
+        <button
+          className="icon-button"
+          onClick={phase === "playing" || phase === "paused" ? togglePause : openTrackSelect}
+          disabled={phase === "select"}
+          aria-label={phase === "playing" || phase === "paused" ? "일시 정지" : "곡 선택"}
+        >
+          {phase === "paused" ? "▶" : phase === "playing" ? "Ⅱ" : "≡"}
         </button>
       </header>
 
@@ -574,20 +686,69 @@ export default function Home() {
         <div className="song-rail">
           <span>{formatTime(currentTime)}</span>
           <div><i style={{ width: `${stats.progress * 100}%` }} /></div>
-          <span>{formatTime(SONG_LENGTH)}</span>
+          <span>{formatTime(track.duration)}</span>
         </div>
 
         <div className="playfield-frame">
           <canvas ref={canvasRef} onPointerDown={handlePointer} aria-label="4레인 리듬 게임 플레이 영역" />
+          {phase === "select" && (
+            <div className="overlay select-panel">
+              <div className="select-heading">
+                <div>
+                  <p className="mission-code">SIGNAL LIBRARY // 03 TRACKS</p>
+                  <h2>Choose your signal.</h2>
+                </div>
+                <p>곡과 난이도를 선택해 프로토콜을 시작하세요.</p>
+              </div>
+              <div className="track-grid">
+                {TRACKS.map((item, index) => {
+                  const itemRecord = records[`${item.id}:${difficulty}`];
+                  const selected = item.id === track.id;
+                  return (
+                    <button
+                      key={item.id}
+                      className={`track-card ${selected ? "selected" : ""}`}
+                      style={{ "--track-accent": item.accent } as CSSProperties}
+                      onClick={() => setSelectedTrackId(item.id)}
+                    >
+                      <span className="track-index">0{index + 1}</span>
+                      <span className="track-wave"><i /><i /><i /><i /><i /><i /></span>
+                      <strong>{item.title}</strong>
+                      <small>{item.subtitle}</small>
+                      <span className="track-meta"><b>{item.bpm.toFixed(2)}</b> BPM · {formatTime(item.duration)}</span>
+                      <span className="track-record">{itemRecord ? `${itemRecord.grade} · ${itemRecord.score.toLocaleString()}` : "NO RECORD"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="difficulty-picker">
+                <span>DIFFICULTY</span>
+                <div>
+                  {DIFFICULTIES.map((item) => (
+                    <button key={item} className={difficulty === item ? "active" : ""} onClick={() => setDifficulty(item)}>
+                      {item} <b>LV.{LEVELS[item]}</b>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="select-action">
+                <p>{activeRecord ? `BEST ${activeRecord.score.toLocaleString()} · ${activeRecord.accuracy.toFixed(2)}%` : "새로운 신호가 기다리고 있습니다."}</p>
+                <button className="primary-button" onClick={() => { phaseRef.current = "ready"; setPhase("ready"); }}>
+                  LOCK IN TRACK <b>↗</b>
+                </button>
+              </div>
+            </div>
+          )}
           {phase === "ready" && (
             <div className="overlay ready-panel">
-              <p className="mission-code">PROTOCOL // 001</p>
-              <h2>Restore the pulse.</h2>
+              <p className="mission-code">{track.protocol} · {difficulty} LV.{LEVELS[difficulty]}</p>
+              <h2>{track.title}</h2>
               <p>신호가 판정선에 닿는 순간 탭하세요.<br />정확할수록 네온 코어가 강하게 폭발합니다.</p>
               <div className="track-spec">
-                <span>155.12 BPM</span><span>4 LANES</span><span>{chartSize} NOTES</span>
+                <span>{track.bpm.toFixed(2)} BPM</span><span>4 LANES</span><span>{chartSize} NOTES</span>
               </div>
               <button className="primary-button" onClick={startGame}>START PROTOCOL <b>↗</b></button>
+              <button className="text-button" onClick={openTrackSelect}>다른 곡 선택</button>
               <small>키보드 D F J K · 모바일 화면 터치</small>
             </div>
           )}
@@ -615,6 +776,7 @@ export default function Home() {
                 </div>
                 <p className="max-combo">MAX COMBO <b>{stats.maxCombo}</b></p>
                 <button className="primary-button" onClick={startGame}>RETRY PROTOCOL <b>↻</b></button>
+                <button className="text-button" onClick={openTrackSelect}>곡 선택으로 돌아가기</button>
               </div>
             </div>
           )}
@@ -624,7 +786,7 @@ export default function Home() {
       <footer className="control-strip">
         <div>
           <span className="status-light" />
-          <p><b>Neon Pulse Protocol</b><small>Original Lyria generation · Normal</small></p>
+          <p><b>{track.title}</b><small>Original Lyria generation · {difficulty}</small></p>
         </div>
         <div className="latency-control">
           <span>INPUT OFFSET</span>
