@@ -9,7 +9,7 @@ const KEY_CODES = ["KeyD", "KeyF", "KeyJ", "KeyK"];
 const COLORS = ["#36f1ff", "#7b61ff", "#ff4fd8", "#ffb84d"];
 
 type Difficulty = "EASY" | "NORMAL" | "HARD";
-type Phase = "select" | "ready" | "countdown" | "playing" | "paused" | "results";
+type Phase = "select" | "ready" | "countdown" | "playing" | "paused" | "gameover" | "results";
 type Judge = "PERFECT" | "GREAT" | "GOOD" | "MISS" | "EMPTY";
 type Timing = "EARLY" | "LATE" | "JUST";
 
@@ -112,6 +112,7 @@ type Stats = {
   miss: number;
   progress: number;
   overdrive: boolean;
+  integrity: number;
 };
 
 type RecordEntry = { score: number; accuracy: number; grade: string; maxCombo: number; fullCombo?: boolean };
@@ -129,6 +130,13 @@ const EMPTY_STATS: Stats = {
   miss: 0,
   progress: 0,
   overdrive: false,
+  integrity: 100,
+};
+
+const DAMAGE: Record<Difficulty, { miss: number; empty: number }> = {
+  EASY: { miss: 5, empty: 2 },
+  NORMAL: { miss: 7, empty: 3 },
+  HARD: { miss: 10, empty: 4 },
 };
 
 function buildChart(track: Track, difficulty: Difficulty): Note[] {
@@ -337,15 +345,26 @@ export default function Home() {
   }, [reducedFx, vibrationEnabled]);
 
   const registerMiss = useCallback((lane: number, currentTime: number) => {
+    if (phaseRef.current !== "playing") return;
     const current = statsRef.current;
-    statsRef.current = {
+    const damage = DAMAGE[selectionRef.current.difficulty].miss;
+    const integrity = Math.max(0, current.integrity - damage);
+    const nextStats = {
       ...current,
       combo: 0,
       sync: Math.max(0, current.sync - 12),
       miss: current.miss + 1,
+      integrity,
     };
+    statsRef.current = nextStats;
     feedbacksRef.current.push({ judge: "MISS", at: currentTime, lane });
     if (!reducedFx) shakeRef.current = Math.max(shakeRef.current, 3);
+    if (integrity <= 0) {
+      audioRef.current?.pause();
+      phaseRef.current = "gameover";
+      setStats(nextStats);
+      setPhase("gameover");
+    }
   }, [reducedFx]);
 
   const hitLane = useCallback(
@@ -370,9 +389,22 @@ export default function Home() {
 
       if (!candidate || closest > 0.15) {
         const current = statsRef.current;
-        statsRef.current = { ...current, combo: 0, sync: Math.max(0, current.sync - 5) };
+        const damage = DAMAGE[difficulty].empty;
+        const nextStats = {
+          ...current,
+          combo: 0,
+          sync: Math.max(0, current.sync - 5),
+          integrity: Math.max(0, current.integrity - damage),
+        };
+        statsRef.current = nextStats;
         feedbacksRef.current.push({ judge: "EMPTY", at: audio.currentTime, lane });
         if (!reducedFx) shakeRef.current = Math.max(shakeRef.current, 1.5);
+        if (nextStats.integrity <= 0) {
+          audio.pause();
+          phaseRef.current = "gameover";
+          setStats(nextStats);
+          setPhase("gameover");
+        }
         return;
       }
 
@@ -404,12 +436,13 @@ export default function Home() {
         great: current.great + (judge === "GREAT" ? 1 : 0),
         good: current.good + (judge === "GOOD" ? 1 : 0),
         overdrive,
+        integrity: Math.min(100, current.integrity + (judge === "PERFECT" ? 0.8 : judge === "GREAT" ? 0.3 : 0)),
       };
       feedbacksRef.current.push({ judge, at: audio.currentTime, lane, timing });
       playHitSound(judge);
       spawnHitEffect(lane, judge);
     },
-    [offsetMs, playHitSound, reducedFx, spawnHitEffect],
+    [difficulty, offsetMs, playHitSound, reducedFx, spawnHitEffect],
   );
 
   const resetGame = useCallback(() => {
@@ -535,8 +568,14 @@ export default function Home() {
           if (!note.hit && !note.missed && currentTime - note.time > 0.15) {
             note.missed = true;
             registerMiss(note.lane, currentTime);
+            if (phaseRef.current === "gameover") break;
           }
           if (note.time > currentTime + TRAVEL_TIME) break;
+        }
+
+        if (phaseRef.current === "gameover") {
+          animation = requestAnimationFrame(draw);
+          return;
         }
 
         const current = statsRef.current;
@@ -800,6 +839,13 @@ export default function Home() {
             <b>{Math.round(stats.sync)}%</b>
           </div>
           <div className="sync-track" role="progressbar" aria-label="오버드라이브 충전량" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(stats.sync)}><i style={{ width: `${stats.sync}%` }} /></div>
+          <div className={`integrity-label ${stats.integrity <= 30 ? "critical" : ""}`}>
+            <span>CORE INTEGRITY</span>
+            <b>{Math.ceil(stats.integrity)}%</b>
+          </div>
+          <div className="integrity-track" role="progressbar" aria-label="코어 체력" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.ceil(stats.integrity)}>
+            <i style={{ width: `${stats.integrity}%` }} />
+          </div>
         </div>
         <div className="combo-block">
           <strong>{stats.combo}</strong>
@@ -922,6 +968,17 @@ export default function Home() {
             </div>
           )}
 
+          {phase === "gameover" && (
+            <div className="overlay gameover-panel" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
+              <p className="mission-code">CORE SIGNAL LOST</p>
+              <h2 id="gameover-title">GAME OVER</h2>
+              <p>{Math.round(stats.progress * 100)}% 지점에서 코어가 붕괴했습니다.<br />MISS를 줄이고 빈 레인 탭을 피하세요.</p>
+              <p className="gameover-score">{stats.score.toLocaleString()} <small>SCORE</small></p>
+              <button className="primary-button" onClick={startGame}>RETRY PROTOCOL <b>↻</b></button>
+              <button className="text-button" onClick={openTrackSelect}>곡 선택으로 돌아가기</button>
+            </div>
+          )}
+
           {phase === "results" && (
             <div className="overlay result-panel" role="dialog" aria-modal="true" aria-labelledby="result-title">
               <div className="grade">{getGrade(accuracy)}</div>
@@ -949,7 +1006,7 @@ export default function Home() {
       </section>
 
       <p className="sr-only" aria-live="polite">
-        {phase === "playing" ? `${stats.combo} 콤보, 점수 ${stats.score}` : phase === "results" ? `플레이 완료, 정확도 ${accuracy.toFixed(2)} 퍼센트` : ""}
+        {phase === "playing" ? `${stats.combo} 콤보, 코어 체력 ${Math.ceil(stats.integrity)} 퍼센트` : phase === "gameover" ? "게임 오버" : phase === "results" ? `플레이 완료, 정확도 ${accuracy.toFixed(2)} 퍼센트` : ""}
       </p>
 
       <footer className="control-strip">

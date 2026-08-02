@@ -81,6 +81,12 @@ button:focus-visible, canvas:focus-visible {
 .sync-label b { color: var(--cyan); font: 600 12px var(--font-geist-mono); }
 .sync-track { height: 5px; background: rgba(255,255,255,.08); overflow: hidden; }
 .sync-track i { display: block; height: 100%; background: linear-gradient(90deg, var(--violet), var(--cyan)); box-shadow: 0 0 18px var(--cyan); transition: width .12s linear; }
+.integrity-label { display: flex; justify-content: space-between; margin: 8px 0 4px; }
+.integrity-label b { color: #41ff9a; font: 700 10px var(--font-geist-mono); }
+.integrity-label.critical span, .integrity-label.critical b { color: #ff365f; animation: danger-pulse .65s ease-in-out infinite alternate; }
+.integrity-track { height: 3px; overflow: hidden; background: rgba(255,255,255,.07); }
+.integrity-track i { display: block; height: 100%; background: linear-gradient(90deg, #ff365f, #ffb84d 38%, #41ff9a); transition: width .16s linear; }
+@keyframes danger-pulse { to { opacity: .35; } }
 .hud.overdrive .sync-label span, .hud.overdrive .sync-label b { color: var(--pink); }
 .hud.overdrive .sync-track i { background: linear-gradient(90deg, var(--pink), #fff); box-shadow: 0 0 22px var(--pink); }
 
@@ -182,6 +188,10 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
   animation: countdown-pop .85s ease-out infinite;
 }
 @keyframes countdown-pop { from { transform: scale(1.18); opacity: .35; } to { transform: scale(1); opacity: 1; } }
+.gameover-panel { background: radial-gradient(circle, rgba(80,5,20,.34), rgba(2,5,12,.94) 62%); }
+.gameover-panel h2 { color: #fff; text-shadow: 0 0 28px #ff365f, 5px 5px 0 #70152a; }
+.gameover-score { margin: 24px 0 18px !important; color: #fff !important; font: 800 28px var(--font-geist-mono) !important; }
+.gameover-score small { color: #8e8290; font-size: 9px; letter-spacing: .12em; }
 
 .result-panel { flex-direction: row; gap: clamp(26px, 7vw, 72px); }
 .grade {
@@ -262,5 +272,5 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
-  .countdown-panel strong { animation: none; }
+  .countdown-panel strong, .integrity-label.critical span, .integrity-label.critical b { animation: none; }
 }

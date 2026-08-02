@@ -11,6 +11,7 @@
 - 키보드 `D F J K` 및 모바일 터치 입력
 - PERFECT / GREAT / GOOD / MISS, EARLY / LATE 피드백
 - 콤보, 점수, 오버드라이브, 최고 기록, FULL COMBO
+- 난이도별 CORE INTEGRITY 체력과 GAME OVER
 - 타격음, 모션 축소, 진동 설정
 
 ## 로컬 실행

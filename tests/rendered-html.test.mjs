@@ -41,7 +41,11 @@ test("ships three playable tracks and the core feedback systems", async () => {
   assert.match(page, /playHitSound/);
   assert.match(page, /REDUCED FX/);
   assert.match(page, /FULL COMBO/);
-  assert.match(page, /combo: 0, sync: Math\.max\(0, current\.sync - 5\)/);
+  assert.match(page, /CORE INTEGRITY/);
+  assert.match(page, /GAME OVER/);
+  assert.match(page, /EASY: \{ miss: 5, empty: 2 \}/);
+  assert.match(page, /sync: Math\.max\(0, current\.sync - 5\)/);
+  assert.match(page, /integrity: Math\.max\(0, current\.integrity - damage\)/);
   assert.match(page, /role="progressbar"/);
   assert.match(layout, /<html lang="ko">/);
 });
