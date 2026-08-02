@@ -8,6 +8,7 @@ const GRID_OFFSET = 0.331;
 const SONG_LENGTH = 121.696;
 const TRAVEL_TIME = 1.75;
 const KEYS = ["D", "F", "J", "K"];
+const KEY_CODES = ["KeyD", "KeyF", "KeyJ", "KeyK"];
 const COLORS = ["#36f1ff", "#7b61ff", "#ff4fd8", "#ffb84d"];
 
 type Phase = "ready" | "playing" | "paused" | "results";
@@ -302,7 +303,8 @@ export default function Home() {
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
       if (event.repeat) return;
-      const lane = KEYS.indexOf(event.key.toUpperCase());
+      // Physical key codes keep controls working with Korean and other IMEs.
+      const lane = KEY_CODES.indexOf(event.code);
       if (lane >= 0) {
         event.preventDefault();
         hitLane(lane);
