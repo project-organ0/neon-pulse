@@ -74,6 +74,8 @@ const TRACKS: Track[] = [
   },
 ];
 
+const DEFAULT_TRACK = TRACKS[1];
+
 const DIFFICULTIES: Difficulty[] = ["EASY", "NORMAL", "HARD"];
 
 type Note = {
@@ -238,14 +240,14 @@ function sendGameLabEvent(eventName: string, metadata: Record<string, unknown> =
 }
 
 export default function Home() {
-  const [selectedTrackId, setSelectedTrackId] = useState(TRACKS[0].id);
+  const [selectedTrackId, setSelectedTrackId] = useState(DEFAULT_TRACK.id);
   const [difficulty, setDifficulty] = useState<Difficulty>("EASY");
   const [records, setRecords] = useState<Records>({});
-  const track = useMemo(() => TRACKS.find((item) => item.id === selectedTrackId) ?? TRACKS[0], [selectedTrackId]);
+  const track = useMemo(() => TRACKS.find((item) => item.id === selectedTrackId) ?? DEFAULT_TRACK, [selectedTrackId]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const notesRef = useRef<Note[]>(buildChart(TRACKS[0], "EASY"));
+  const notesRef = useRef<Note[]>(buildChart(DEFAULT_TRACK, "EASY"));
   const particlesRef = useRef<Particle[]>([]);
   const pulsesRef = useRef<Pulse[]>([]);
   const feedbacksRef = useRef<Array<{ judge: Judge; at: number; lane: number; timing?: Timing }>>([]);
@@ -258,7 +260,7 @@ export default function Home() {
   const flashRef = useRef(0);
   const overdriveUntilRef = useRef(0);
   const lastHudUpdateRef = useRef(0);
-  const selectionRef = useRef({ track: TRACKS[0], difficulty: "EASY" as Difficulty });
+  const selectionRef = useRef({ track: DEFAULT_TRACK, difficulty: "EASY" as Difficulty });
   const countdownTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const recordsRef = useRef<Records>({});
   const [phase, setPhase] = useState<Phase>("select");
@@ -298,6 +300,13 @@ export default function Home() {
 
   useEffect(() => {
     const hydrationFrame = requestAnimationFrame(() => {
+      const mobileFirstVisit = window.matchMedia("(max-width: 680px)").matches
+        && !window.localStorage.getItem("neon-mobile-onboarding-v1");
+      if (mobileFirstVisit) {
+        window.localStorage.setItem("neon-mobile-onboarding-v1", "seen");
+        phaseRef.current = "ready";
+        setPhase("ready");
+      }
       const stored = window.localStorage.getItem("neon-input-offset");
       if (stored) setOffsetMs(Number(stored) || 0);
       const savedRecords = window.localStorage.getItem("neon-records-v1");
@@ -316,7 +325,7 @@ export default function Home() {
         setReducedFx(true);
       }
     });
-    const audio = new Audio(TRACKS[0].audio);
+    const audio = new Audio(DEFAULT_TRACK.audio);
     audio.preload = "auto";
     audioRef.current = audio;
     return () => {
@@ -425,7 +434,10 @@ export default function Home() {
   const registerMiss = useCallback((lane: number, currentTime: number, feedbackJudge: Judge = "MISS") => {
     if (phaseRef.current !== "playing") return;
     const current = statsRef.current;
-    const damage = DAMAGE[selectionRef.current.difficulty].miss;
+    const activeDifficulty = selectionRef.current.difficulty;
+    const damage = activeDifficulty === "EASY" && currentTime < 15
+      ? 2
+      : DAMAGE[activeDifficulty].miss;
     const integrity = Math.max(0, current.integrity - damage);
     const nextStats = {
       ...current,
@@ -467,7 +479,9 @@ export default function Home() {
 
       if (!candidate || closest > 0.15) {
         const current = statsRef.current;
-        const damage = DAMAGE[difficulty].empty;
+        const damage = difficulty === "EASY" && judgedTime < 15
+          ? 1
+          : DAMAGE[difficulty].empty;
         const nextStats = {
           ...current,
           combo: 0,
@@ -1078,12 +1092,16 @@ export default function Home() {
               <p className="mission-code">{track.protocol} · {difficulty} LV.{track.levels[difficulty]}</p>
               <h2 id="ready-title">{track.title}</h2>
               <p>신호가 판정선에 닿는 순간 탭하세요.<br />길게 이어진 노트는 끝부분까지 누르고 있어야 합니다.</p>
+              <div className="lane-tap-guide" aria-label="각 레인을 탭하세요">
+                <strong>각 레인을 탭하세요</strong>
+                <div aria-hidden="true">{KEYS.map((key) => <span key={key}>{key}</span>)}</div>
+              </div>
               <div className="track-spec">
                 <span>{track.bpm.toFixed(2)} BPM</span><span>4 LANES</span><span>{chartSize} NOTES</span>
               </div>
               <button className="primary-button" onClick={startGame}>START PROTOCOL <b>↗</b></button>
               <button className="text-button" onClick={openTrackSelect}>다른 곡 선택</button>
-              <small>키보드 D F J K · 모바일 화면 터치</small>
+              <small>키보드 D F J K · 모바일은 각 레인을 직접 터치</small>
             </div>
           )}
 
@@ -1150,12 +1168,12 @@ export default function Home() {
           <span className="status-light" />
           <p><b>{track.title}</b><small>Original Lyria generation · {difficulty}</small></p>
         </div>
-        <div className="latency-control">
+        {(phase === "countdown" || phase === "playing" || phase === "paused") && <div className="latency-control">
           <span title="노트보다 입력이 늦게 판정되면 값을 올리고, 빠르게 판정되면 내리세요.">INPUT OFFSET</span>
           <button onClick={() => updateOffset(offsetMs - 10)} aria-label="입력 오프셋 10밀리초 감소">−</button>
           <b>{offsetMs > 0 ? "+" : ""}{offsetMs}ms</b>
           <button onClick={() => updateOffset(offsetMs + 10)} aria-label="입력 오프셋 10밀리초 증가">＋</button>
-        </div>
+        </div>}
       </footer>
     </main>
   );

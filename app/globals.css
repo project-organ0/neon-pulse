@@ -177,6 +177,18 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
 }
 .primary-button:hover { transform: translateY(-2px); box-shadow: 0 0 45px rgba(54,241,255,.42); }
 .primary-button b { margin-left: 20px; }
+.lane-tap-guide {
+  display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 20px;
+  color: #dffbff; font: 700 11px var(--font-geist-mono); letter-spacing: .08em;
+}
+.lane-tap-guide > div { display: flex; gap: 10px; }
+.lane-tap-guide span {
+  display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--cyan); border-radius: 50%;
+  color: #061017; background: var(--cyan); box-shadow: 0 0 18px rgba(54,241,255,.3);
+}
+.lane-tap-guide span:nth-child(2) { border-color: var(--violet); background: var(--violet); }
+.lane-tap-guide span:nth-child(3) { border-color: var(--pink); background: var(--pink); }
+.lane-tap-guide span:nth-child(4) { border-color: #ffb84d; background: #ffb84d; }
 .ready-panel small { margin-top: 14px; color: #637086; font: 500 10px var(--font-geist-mono); }
 .text-button { margin-top: 18px; border: 0; color: #8695aa; background: transparent; cursor: pointer; text-decoration: underline; }
 .pause-panel { background: rgba(2,5,12,.88); }
@@ -241,6 +253,9 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: 
   .control-strip > div:first-child { display: none; }
   .control-strip { justify-content: center; padding-top: 9px; }
   .track-spec { gap: 12px; font-size: 9px; }
+  .ready-panel > p:not(.mission-code) { font-size: 13px; }
+  .lane-tap-guide { margin-top: 16px; }
+  .lane-tap-guide span { width: 42px; height: 42px; }
   .overlay { padding: 22px; }
   .select-panel { padding: 18px 14px; }
   .select-heading { display: block; margin-bottom: 15px; }
