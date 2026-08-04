@@ -232,6 +232,10 @@ function getGrade(accuracy: number) {
   if (accuracy >= 70) return "C";
   return "D";
 }
+function sendGameLabEvent(eventName: string, metadata: Record<string, unknown> = {}) {
+  if (typeof window === "undefined" || !window.opener) return;
+  window.opener.postMessage({ source: "game-lab-game", eventName, metadata }, "*");
+}
 
 export default function Home() {
   const [selectedTrackId, setSelectedTrackId] = useState(TRACKS[0].id);
@@ -265,11 +269,28 @@ export default function Home() {
   const [reducedFx, setReducedFx] = useState(false);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
   const [resultMeta, setResultMeta] = useState<ResultMeta>({ newBest: false, previousBest: 0, fullCombo: false });
+  const runNumberRef = useRef(0);
+  const runEndedRef = useRef(true);
   const chartSize = useMemo(() => buildChart(track, difficulty).length, [track, difficulty]);
 
   useEffect(() => {
     selectionRef.current = { track, difficulty };
   }, [track, difficulty]);
+
+  useEffect(() => {
+    if (phase === "playing" && runEndedRef.current) {
+      runNumberRef.current += 1;
+      if (runNumberRef.current > 1) sendGameLabEvent("game_restarted", { runNumber: runNumberRef.current });
+      runEndedRef.current = false;
+      sendGameLabEvent("game_run_started", { runNumber: runNumberRef.current, trackId: track.id, difficulty });
+    }
+    if ((phase === "results" || phase === "gameover") && !runEndedRef.current) {
+      runEndedRef.current = true;
+      const endReason = phase === "results" ? "completed" : "game_over";
+      sendGameLabEvent("game_run_ended", { runNumber: runNumberRef.current, endReason, progress: stats.progress, score: stats.score, accuracy: getAccuracy(stats), maxCombo: stats.maxCombo, trackId: track.id, difficulty });
+      if (phase === "results") sendGameLabEvent("game_completed", { runNumber: runNumberRef.current, score: stats.score });
+    }
+  }, [phase, stats, track.id, difficulty]);
 
   useEffect(() => {
     recordsRef.current = records;
